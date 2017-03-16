@@ -7,28 +7,58 @@
 //
 
 import UIKit
+import ObjectMapper
+import Moya
+import Moya_ObjectMapper
 
-class MasterViewController: UITableViewController {
+class MasterViewController: UIViewController {
 
 	var detailViewController: DetailViewController? = nil
-	var objects = [Any]()
+	var artistsGateway : ArtistsGateway?
+	var throttler : Timer?
+	let viewModel = MasterViewModel()
 
+	@IBOutlet weak var searchBar: UISearchBar!
+	@IBOutlet weak var collectionView: UICollectionView!
 
 	override func viewDidLoad() {
 		super.viewDidLoad()
-		// Do any additional setup after loading the view, typically from a nib.
-		self.navigationItem.leftBarButtonItem = self.editButtonItem
 
-		let addButton = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(insertNewObject(_:)))
-		self.navigationItem.rightBarButtonItem = addButton
 		if let split = self.splitViewController {
 		    let controllers = split.viewControllers
 		    self.detailViewController = (controllers[controllers.count-1] as! UINavigationController).topViewController as? DetailViewController
 		}
+		
+		collectionView.delegate = self
+		collectionView.dataSource = self
+		searchBar.delegate = self
+		
+		let imageView = UIImageView(image: UIImage(named : "logo"))
+		let frame = self.navigationController?.navigationBar.frame ?? CGRect.zero
+		imageView.frame = frame
+		imageView.contentMode = .scaleAspectFit
+		self.navigationItem.titleView = imageView
+	}
+	
+	override func viewDidLayoutSubviews() {
+		super.viewDidLayoutSubviews()
+		
+		self.navigationItem.titleView?.frame = self.navigationController?.navigationBar.frame ?? CGRect.zero
+	}
+	
+	func searchArtists() {
+		
+		guard let searchTerm = self.searchBar.text, (self.searchBar.text ?? "").characters.count > 0 else { return }
+		
+		_ = viewModel.search(artistByName: searchTerm).then { [unowned self] foundGateway -> Void in
+			self.artistsGateway = foundGateway
+
+		}.always {
+			self.collectionView.reloadData()
+		}
 	}
 
 	override func viewWillAppear(_ animated: Bool) {
-		self.clearsSelectionOnViewWillAppear = self.splitViewController!.isCollapsed
 		super.viewWillAppear(animated)
 	}
 
@@ -37,58 +67,66 @@ class MasterViewController: UITableViewController {
 		// Dispose of any resources that can be recreated.
 	}
 
-	func insertNewObject(_ sender: Any) {
-		objects.insert(NSDate(), at: 0)
-		let indexPath = IndexPath(row: 0, section: 0)
-		self.tableView.insertRows(at: [indexPath], with: .automatic)
-	}
-
-	// MARK: - Segues
-
 	override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
 		if segue.identifier == "showDetail" {
-		    if let indexPath = self.tableView.indexPathForSelectedRow {
-		        let object = objects[indexPath.row] as! NSDate
-		        let controller = (segue.destination as! UINavigationController).topViewController as! DetailViewController
-		        controller.detailItem = object
-		        controller.navigationItem.leftBarButtonItem = self.splitViewController?.displayModeButtonItem
-		        controller.navigationItem.leftItemsSupplementBackButton = true
+		    if let indexPath = self.collectionView?.indexPathsForSelectedItems?.first {
+					if let artist = artistsGateway?.artists?[indexPath.item] {
+						let controller = (segue.destination as! UINavigationController).topViewController as! DetailViewController
+						controller.detailArtist = artist
+						controller.navigationItem.leftBarButtonItem = self.splitViewController?.displayModeButtonItem
+						controller.navigationItem.leftItemsSupplementBackButton = true
+					}
 		    }
 		}
 	}
-
-	// MARK: - Table View
-
-	override func numberOfSections(in tableView: UITableView) -> Int {
-		return 1
-	}
-
-	override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-		return objects.count
-	}
-
-	override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-		let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
-
-		let object = objects[indexPath.row] as! NSDate
-		cell.textLabel!.text = object.description
-		return cell
-	}
-
-	override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-		// Return false if you do not want the specified item to be editable.
-		return true
-	}
-
-	override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCellEditingStyle, forRowAt indexPath: IndexPath) {
-		if editingStyle == .delete {
-		    objects.remove(at: indexPath.row)
-		    tableView.deleteRows(at: [indexPath], with: .fade)
-		} else if editingStyle == .insert {
-		    // Create a new instance of the appropriate class, insert it into the array, and add a new row to the table view.
-		}
-	}
-
-
 }
 
+extension MasterViewController {
+	override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+		super.touchesBegan(touches, with: event)
+		self.searchBar.endEditing(true)
+	}
+}
+
+extension MasterViewController : UICollectionViewDataSource {
+	func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+		
+		let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "artistCell", for: indexPath) as! ArtistCollectionViewCell
+		
+		cell.clean()
+		
+		if let artist = artistsGateway?.artists?[indexPath.item] {
+		   cell.configure(withArtist: artist)
+		}
+		
+		cell.backgroundColor = UIColor.clear
+		return cell
+		
+	}
+	
+	func numberOfSections(in collectionView: UICollectionView) -> Int {
+		return 1
+	}
+	
+	func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+		return artistsGateway?.artists?.count ?? 0
+	}
+}
+
+extension MasterViewController : UICollectionViewDelegate {
+	
+	
+	
+	func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+		self.performSegue(withIdentifier: "showDetail", sender: indexPath)
+	}
+}
+
+extension MasterViewController : UISearchBarDelegate {
+	func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+		self.throttler?.invalidate()
+		self.throttler = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false, block: { [unowned self] (timer) in
+			self.searchArtists()
+		})
+	}
+}
